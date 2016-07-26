@@ -1,0 +1,120 @@
+Berikut step by step Konfigurasi Loadbalancer …
+
+LB1 192.168.9.106
+LB2 192.168.9.107
+IPVirtual 192.168.9.108
+Server Mysql Master 192.168.9.110
+Server Mysql Master 192.168.9.109
+
+install haproxy :
+#apt-get install haproxy
+#vim /etc/haproxy/haproxy.cfg
+global
+        log 127.0.0.1   local0
+        log 127.0.0.1   local1 notice
+        stats socket /tmp/stats
+        maxconn 4096
+        pidfile /var/run/haproxy.pid
+        daemon
+defaults
+        log global
+        mode tcp
+        option dontlognull
+        retries 3
+        option redispatch
+        maxconn 4000
+        contimeout 5000
+        clitimeout 50000
+        srvtimeout 50000
+listen  MySQL 192.168.9.108:3306 (ip loadbalancer)
+        mode tcp
+        balance roundrobin
+        server mysql 192.168.9.110:3306 check port 9200 inter 12000 rise 3 fall 3
+        server mysqlslave 192.168.9.109:3306 check port 9200 inter 12000 rise 3 fall 3
+listen stats 192.168.9.108:31337
+        mode http
+        option httpclose
+        balance roundrobin
+        stats enable
+        stats uri /
+        stats realm Haproxy\ Statistics
+tes haproxynya :
+#haproxy -f /etc/haproxy/haproxy.cfg -c
+#/etc/init.d/haproxy start
+
+Kemudian install keepalivednya :
+
+What is Keepalived ?
+Keepalived is to provide simple and robust facilities for loadbalancing and high-availability to Linux system and Linux based infrastructures. 
+Loadbalancing framework relies on well-known and widely used Linux Virtual Server (IPVS) kernel module providing Layer4 loadbalancing. Keepalived implements a set of checkers to dynamically and adaptively maintain and manage loadbalanced server pool according their health. On the other hand high-availability is achieved by VRRP protocol. 
+VRRP is a fundamental brick for router failover. In addition, Keepalived implements a set of hooks to the VRRP finite state machine providing low-level and high-speed protocol interactions. Keepalived frameworks can be used independently or all together to provide resilient infrastructures.
+
+#apt-get install keepalived
+
+#vim /etc/keepalived/keepalived.conf
+vrrp_script chk_haproxy {               # Requires keepalived-1.1.13
+        script "killall -0 haproxy"     # cheaper than pidof
+        interval 2                      # check every 2 seconds
+        weight 2                        # add 2 points of prio if OK
+}
+
+vrrp_instance VI_1 {
+        interface eth0
+        state MASTER
+        virtual_router_id 51
+        priority 101                    # 101 on master, 100 on backup
+        virtual_ipaddress {
+            192.168.9.108               #ip virtual
+        }
+        track_script {
+            chk_haproxy
+        }
+}
+#/etc/init.d/keepalived start
+
+Kemudian konfigurasi di sisi server master mysql nya dengan asumsi sudah di replica :
+
+#Konfig di sisi server(Master) :
+
+Kita harus membuat service mysql di xinetd (sebuah pengganti inetd), dimana diwakili oleh sebuah skrip yang akan mengecek keadaan server mysql
+buat file mysqlchk di xinet.d
+#vim /etc/xinetd.d/mysqlchk (lihat mysqlchk.txt)
+
+mysqlcheck is a maintenance tool that allows you to check, repair, analyze and optimize multiple tables from the command line.
+
+#/etc/xinetd.d/mysqlchk
+#default : on
+# description: mysqlchk
+service mysqlchk
+{
+        flags           = REUSE
+        socket_type     = stream
+        port            = 9200
+        wait            = no
+        user            = nobody
+        server          = /usr/bin/mysqlchk
+        log_on_failure  += USERID
+        disable         = no
+        only_from       = 0.0.0.0/0 # recommended to put the IPs that need
+                                    # to connect exclusively (security purposes)
+        per_source      = UNLIMITED # Recently added (May 20, 2010)
+                                    # Prevents the system from complaining
+                                    # about having too many connections open from
+                                    # the same IP. More info:
+                                    # http://www.linuxfocus.org/English/November2000/article175.shtml
+}
+Selain itu kita juga harus membuat skrip tersebut sebagai services
+kemudian buat file server = /usr/bin/mysqlchk
+#vim /usr/bin/mysqlchk (save dan simpan)
+
+#chmod 777 /usr/bin/mysqlchk
+
+Kemudian pastikan bahwa skrip kita telah terdapat pada daftar services sistem (/etc/services)
+#vim /etc/services
+tambahkan port dibawah ini
+mysqlchk    9200/tcp    # MySQL check  <— Add this line
+
+Nah, untuk memonitor service di kedua server, silakan gunakan webbrowser untuk melihatnya di http://ip-address-balancer-anda:31337/.
+selesai deh, untuk mysql-slave nya sama dengan kofigurasi mysql-master tinggal di sesuaikan😀
+#mysql service di masternya di stop lalu start lagi
+#jalankan service nya /etc/init.d/xinetd start (penting)
